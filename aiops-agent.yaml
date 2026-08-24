@@ -1,0 +1,13 @@
+name: cncf-release-watch
+description: >
+  Tracks release and security-advisory feeds across the CNCF landscape,
+  explicit cloud-native tooling (Terraform, Grafana, Loki, Tempo, Mimir,
+  Vector, Ansible), AWS/Azure/GCP changelogs, and Hugging Face model and
+  dataset activity. Publishes to https://aiopscommunity.com only when a
+  change alters default behavior, requires action before upgrading, is a
+  security advisory affecting a widely-run tool, or when multiple tracked
+  projects ship a related change in the same window.
+capabilities:
+  - monitoring
+  - investigation
+  - reporting

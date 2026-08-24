@@ -1,0 +1,94 @@
+name: cncf-release-watch
+
+on:
+  schedule:
+    # Every 6 hours, offset from the hour so we're not hammering shared
+    # feed hosts at the same instant every other scheduled job does.
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run — preview only, never publishes or comments"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cncf-release-watch
+  cancel-in-progress: false
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore agent state (dedup, feed cache)
+        uses: actions/cache@v4
+        with:
+          path: state
+          key: agent-state-${{ github.run_id }}
+          restore-keys: |
+            agent-state-
+
+      - name: Determine run mode
+        id: mode
+        shell: bash
+        run: |
+          # Publishing/commenting for real only ever happens on the
+          # scheduled trigger, and never on a fork — regardless of what a
+          # workflow_dispatch input says. A manual run defaults to
+          # dry-run and can only go live by explicitly passing
+          # dry_run=false, and even then only against the upstream repo.
+          if [ "${{ github.event.repository.fork }}" = "true" ]; then
+            echo "dry_run=true" >> "$GITHUB_OUTPUT"
+            echo "Running on a fork — forcing dry-run."
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "dry_run=${{ github.event.inputs.dry_run }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "dry_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Jitter (heartbeat courtesy — vary run-to-run timing slightly)
+        if: github.event_name == 'schedule'
+        shell: bash
+        run: sleep $((RANDOM % 600))
+
+      - name: Heartbeat — GET /home and act on it
+        env:
+          AIOPS_COMMUNITY_KEY: ${{ secrets.AIOPS_COMMUNITY_KEY }}
+          AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
+        run: |
+          if [ "${{ steps.mode.outputs.dry_run }}" = "true" ]; then
+            python -m src.main heartbeat --dry-run
+          else
+            python -m src.main heartbeat
+          fi
+
+      - name: Fetch, analyze, write, publish
+        env:
+          AIOPS_COMMUNITY_KEY: ${{ secrets.AIOPS_COMMUNITY_KEY }}
+          AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
+        run: |
+          if [ "${{ steps.mode.outputs.dry_run }}" = "true" ]; then
+            python -m src.main run --dry-run
+          else
+            python -m src.main run
+          fi
