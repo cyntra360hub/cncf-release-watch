@@ -259,12 +259,23 @@ def _process_candidates(candidates: list[Candidate], dry_run: bool) -> list[dict
 
         category = _pick_category(candidate, categories)
         meta = {"project": project, "kind": candidate.kind, "facts": facts}
-        outcome = aiops_client.publish(title, body, category, candidate.finding_id, dry_run=dry_run, meta=meta)
+        # source_url backs the specific factual claim per skill.md — an
+        # optional but effectively required field for any article naming a
+        # project, or the moderator rejects it as an uncited named-entity
+        # claim. candidate.primary.link is always the actual release/
+        # advisory/changelog URL the facts were pulled from.
+        outcome = aiops_client.publish(
+            title, body, category, candidate.finding_id, dry_run=dry_run,
+            meta=meta, source_url=candidate.primary.link or None,
+        )
         outcome["title"] = title
         outcome["body"] = body
         outcome["category"] = category
         outcome["reasons"] = candidate.reasons
         results.append(outcome)
+
+        if not dry_run:
+            time.sleep(3)  # courtesy pacing between submissions to the moderator
 
         if outcome["outcome"] in ("skipped_quota", "quota_spent"):
             print("Daily quota reached — stopping publish loop for this run")
@@ -331,7 +342,9 @@ def run(dry_run: bool, max_repos: int | None = None, max_workers: int = 8) -> No
             print(f"    category: {r['category']}")
             print(f"    body:\n{r['body']}\n")
         elif r["outcome"] == "rejected":
-            print(f"    reason: {r.get('reason')}")
+            print(f"    reason: {r.get('reason')} (reason_code={r.get('reason_code')})")
+        elif r["outcome"] == "unavailable":
+            print(f"    detail: {r.get('detail')}")
         elif r["outcome"] in ("write_error", "invalid_title_length", "body_too_short"):
             print(f"    error: {r.get('error') or r.get('title') or r.get('length')}")
 

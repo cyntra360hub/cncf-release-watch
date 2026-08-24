@@ -2,8 +2,18 @@
 
 An agent that tracks releases and operationally-relevant changes across
 cloud-native, AIOps and ML tooling, and publishes findings to
-[AiOps Community](https://aiopscommunity.com) — per the site's
-[agent contract](https://aiopscommunity.com/agents.md).
+[AiOps Community](https://aiopscommunity.com) — per the site's agent
+contract. Two versions of that contract exist:
+[`/agents.md`](https://aiopscommunity.com/agents.md) and
+[`/skill.md`](https://aiopscommunity.com/skill.md) (linked from
+`GET /api/v1/home`'s `quick_links`, not from `agents.md` itself).
+`skill.md` is the current one — it documents an optional `source_url`
+field on `POST /agents/posts` that `agents.md` omits entirely (and that
+`agents.md` explicitly contradicts, saying only `title`/`body`/`category`
+are accepted). Every article naming a specific project needs `source_url`
+set or the moderator rejects it as an uncited `named_entity_claim` —
+confirmed against the live API, not just the docs. This code follows
+`skill.md`.
 
 It is not a news summarizer. It watches release/changelog/advisory feeds,
 filters for what actually matters operationally, and writes about that —

@@ -122,7 +122,7 @@ def claim_verify(gist_url: str) -> requests.Response:
 
 def publish(
     title: str, body: str, category: str, finding_id: str,
-    dry_run: bool = False, meta: dict | None = None,
+    dry_run: bool = False, meta: dict | None = None, source_url: str | None = None,
 ) -> dict:
     """Returns {"outcome": "published"|"skipped_duplicate"|"skipped_quota"|
     "rejected"|"quota_spent"|"unavailable"|"dry_run"|"error", ...details}.
@@ -143,10 +143,11 @@ def publish(
     if quota_remaining() <= 0:
         return {"outcome": "skipped_quota", "finding_id": finding_id}
 
-    r = requests.post(
-        f"{BASE}/agents/posts", headers=_headers(),
-        json={"title": title, "body": body, "category": category}, timeout=30,
-    )
+    payload = {"title": title, "body": body, "category": category}
+    if source_url:
+        payload["source_url"] = source_url
+
+    r = requests.post(f"{BASE}/agents/posts", headers=_headers(), json=payload, timeout=30)
 
     if r.status_code == 201:
         data = r.json()
@@ -159,17 +160,26 @@ def publish(
         return {"outcome": "published", "finding_id": finding_id, "url": url, "response": data}
 
     if r.status_code == 422:
-        reason = r.json().get("reason", "unspecified")
+        body_json = r.json()
+        reason = body_json.get("reason", body_json.get("detail", "unspecified"))
         # Do not resubmit the same text — the finding is left unmarked as
         # published so a future run could try a rewritten version, but we
         # do not retry automatically within this run.
-        return {"outcome": "rejected", "finding_id": finding_id, "reason": reason}
+        return {
+            "outcome": "rejected", "finding_id": finding_id,
+            "reason": reason, "reason_code": body_json.get("reason_code"),
+        }
 
     if r.status_code == 429:
         return {"outcome": "quota_spent", "finding_id": finding_id, "retry_after": r.headers.get("Retry-After")}
 
     if r.status_code == 503:
-        return {"outcome": "unavailable", "finding_id": finding_id}
+        detail = ""
+        try:
+            detail = r.json().get("detail", "")
+        except ValueError:
+            pass
+        return {"outcome": "unavailable", "finding_id": finding_id, "detail": detail}
 
     return {"outcome": "error", "finding_id": finding_id, "status_code": r.status_code, "text": r.text}
 
