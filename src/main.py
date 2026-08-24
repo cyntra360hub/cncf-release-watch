@@ -120,13 +120,33 @@ def _fetch_all_entries(session: PoliteSession, state: dict, sources, max_workers
 
 
 def _new_entries(state: dict, entries: list[ReleaseEntry]) -> list[ReleaseEntry]:
-    fresh = []
-    for e in entries:
-        if e.entry_id and not is_seen(state, e.entry_id):
-            fresh.append(e)
-        if e.entry_id:
-            mark_seen(state, e.entry_id)
-    return fresh
+    """Entries not already marked seen. Does NOT mark them seen itself —
+    that happens later, only once each entry reaches a terminal outcome
+    (see _mark_terminal_entries_seen). Marking seen here, at fetch time,
+    would permanently drop any candidate that simply lost the daily
+    publish-quota race: real feed volume regularly exceeds the 2-5/day
+    quota, and quota resets tomorrow — a candidate that didn't get a
+    turn today deserves another shot, not silent, permanent loss.
+    """
+    return [e for e in entries if e.entry_id and not is_seen(state, e.entry_id)]
+
+
+# Outcomes that mean "try this finding again another run" rather than
+# "this is settled" — an entry behind one of these must NOT be marked
+# seen, or it would never get a second chance once its underlying cause
+# clears (quota resets daily; a transient write failure isn't the
+# finding's fault).
+_RETRYABLE_OUTCOMES = {
+    "skipped_quota", "quota_spent", "unavailable",
+    "write_error", "invalid_title_length", "body_too_short",
+    "dry_run",
+}
+
+
+def _candidate_entry_ids(candidate: Candidate) -> list[str]:
+    if candidate.kind == "pattern":
+        return [e.entry_id for e in candidate.related if e.entry_id]
+    return [candidate.primary.entry_id] if candidate.primary.entry_id else []
 
 
 def _within_lookback(entries: list[ReleaseEntry], hours: int) -> list[ReleaseEntry]:
@@ -270,13 +290,6 @@ def run(dry_run: bool, max_repos: int | None = None, max_workers: int = 8) -> No
         save_state(state)  # persist feed cache even if the rest of the run fails
 
     fresh_entries = _new_entries(state, all_entries)
-    if not dry_run:
-        save_state(state)  # persist seen_entry_ids
-
-    # In dry-run, entries are still filtered against seen_entry_ids already on
-    # disk (so it reflects reality), but mark_seen()'s in-memory mutations
-    # above are never written back — a preview must never consume the same
-    # entries a real run would still need to see.
 
     candidate_entries = _within_lookback(fresh_entries, RELEASE_LOOKBACK_HOURS)
     print(f"{len(fresh_entries)} entries not seen before, {len(candidate_entries)} within the {RELEASE_LOOKBACK_HOURS}h lookback window")
@@ -284,11 +297,30 @@ def run(dry_run: bool, max_repos: int | None = None, max_workers: int = 8) -> No
     candidates = find_candidates(candidate_entries)
     print(f"{len(candidates)} candidates cleared the operational-relevance filter")
 
+    # Fresh entries that never even became a candidate (no operational
+    # signal) are settled for good — mark them seen now so future runs
+    # don't keep re-classifying the same routine releases.
+    candidate_entry_ids = {eid for c in candidates for eid in _candidate_entry_ids(c)}
+    for e in fresh_entries:
+        if e.entry_id and e.entry_id not in candidate_entry_ids:
+            mark_seen(state, e.entry_id)
+    if not dry_run:
+        save_state(state)
+
     if not candidates:
         print("Nothing material this run. Publishing nothing — that is the correct outcome most days.")
         return
 
     results = _process_candidates(candidates, dry_run=dry_run)
+
+    candidates_by_finding_id = {c.finding_id: c for c in candidates}
+    for r in results:
+        if r["outcome"] in _RETRYABLE_OUTCOMES:
+            continue  # leave unseen so a later run retries this finding
+        candidate = candidates_by_finding_id.get(r.get("finding_id"))
+        if candidate:
+            for eid in _candidate_entry_ids(candidate):
+                mark_seen(state, eid)
     if not dry_run:
         save_state(state)
 
@@ -300,6 +332,8 @@ def run(dry_run: bool, max_repos: int | None = None, max_workers: int = 8) -> No
             print(f"    body:\n{r['body']}\n")
         elif r["outcome"] == "rejected":
             print(f"    reason: {r.get('reason')}")
+        elif r["outcome"] in ("write_error", "invalid_title_length", "body_too_short"):
+            print(f"    error: {r.get('error') or r.get('title') or r.get('length')}")
 
 
 # ---------------------------------------------------------------------------

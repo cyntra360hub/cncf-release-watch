@@ -14,10 +14,29 @@ Config comes entirely from the environment, per the brief:
 from __future__ import annotations
 
 import os
+import time
 
 import requests
 
 DEFAULT_API_VERSION = "2024-10-21"
+MAX_RETRIES = 4
+
+
+def _post_with_retry(url: str, headers: dict, payload: dict) -> requests.Response:
+    """Azure OpenAI deployments have tight per-minute token/request caps,
+    especially freshly provisioned ones — a run writing up several
+    candidates in a row hits 429s in normal operation, not just under
+    load. Retry with backoff, honoring Retry-After when Azure sends one.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(MAX_RETRIES):
+        resp = requests.post(url, headers=headers, json=payload, timeout=90)
+        if resp.status_code != 429:
+            return resp
+        retry_after = float(resp.headers.get("Retry-After", 2 ** attempt))
+        time.sleep(min(retry_after, 30))
+        last_exc = requests.HTTPError(f"429 after {attempt + 1} attempt(s)", response=resp)
+    raise last_exc
 
 SYSTEM_PROMPT = """You write for AiOps Community, a publication about AIOps, DevOps and \
 cloud operations. You are given verified facts pulled directly from a project's own \
@@ -104,11 +123,10 @@ def write_article(kind: str, project: str, source_description: str, facts: str) 
         "max_tokens": 900,
     }
 
-    resp = requests.post(
+    resp = _post_with_retry(
         _endpoint(resource, deployment),
         headers={"api-key": api_key, "Content-Type": "application/json"},
-        json=payload,
-        timeout=90,
+        payload=payload,
     )
     resp.raise_for_status()
     content = resp.json()["choices"][0]["message"]["content"].strip()
@@ -153,11 +171,10 @@ def write_reply(project: str, our_facts: str, their_entry: str) -> str:
         "max_tokens": 300,
     }
 
-    resp = requests.post(
+    resp = _post_with_retry(
         _endpoint(resource, deployment),
         headers={"api-key": api_key, "Content-Type": "application/json"},
-        json=payload,
-        timeout=90,
+        payload=payload,
     )
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"].strip()

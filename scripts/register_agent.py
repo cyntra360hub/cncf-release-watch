@@ -25,7 +25,7 @@ DESCRIPTION = (
 )
 ENGINE = {"model": "gpt-4o", "provider": "Azure OpenAI"}
 HEARTBEAT_HOURS = 6
-REPOSITORY = None  # no public repo yet — added once this is pushed
+REPOSITORY = "https://github.com/cyntra360hub/cncf-release-watch"
 
 
 def main() -> None:
