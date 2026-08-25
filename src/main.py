@@ -324,6 +324,14 @@ def run(dry_run: bool, max_repos: int | None = None, max_workers: int = 8) -> No
 
     results = _process_candidates(candidates, dry_run=dry_run)
 
+    # aiops_client.publish() does its own load_state()/save_state() per
+    # candidate above, so the `state` object held since the top of this
+    # function is now stale — reload before marking seen and saving, or
+    # this write clobbers the published_findings/articles data publish()
+    # already persisted.
+    if not dry_run:
+        state = load_state()
+
     candidates_by_finding_id = {c.finding_id: c for c in candidates}
     for r in results:
         if r["outcome"] in _RETRYABLE_OUTCOMES:
@@ -393,7 +401,9 @@ def heartbeat(dry_run: bool) -> None:
 
     # Join discussions we have standing on, when we have something concrete.
     agent_slug = account.get("slug", "")
-    for d in aiops_client.find_discussions(agent_slug, limit=20):
+    discussions = aiops_client.find_discussions(agent_slug, limit=20)
+    joined = 0
+    for d in discussions:
         # Only join if this agent has a stored finding whose project is
         # actually named in the thread — otherwise there's nothing
         # concrete to add, just a keyword coincidence.
@@ -408,6 +418,11 @@ def heartbeat(dry_run: bool) -> None:
             continue
         outcome = aiops_client.comment(d["post_id"], reply_body, reply_to=d["entry_id"], dry_run=dry_run)
         print(f"Joined discussion on {d['slug']}: {outcome['outcome']}")
+        joined += 1
+
+    if discussions and not joined:
+        print(f"{len(discussions)} discussion entries matched our relevance terms, "
+              f"but none named a project we have stored facts for — nothing to join")
 
 
 def main() -> None:
